@@ -19,7 +19,26 @@ const userCodes = new Map(); // code -> { code, pseudo }
 const conversations = new Map(); // code -> { label, messages: [] }
 const activeSessions = new Map(); // socket.id -> { role, code }
 
-// Fonction pour envoyer une notification Discord
+// Charger les codes permanents définis dans Render (ex: 111111:Alice,222222:Bob)
+function loadPermanentCodes() {
+    if (process.env.USER_CODES) {
+        const pairs = process.env.USER_CODES.split(',');
+        pairs.forEach(pair => {
+            const [code, pseudo] = pair.split(':');
+            if (code && pseudo) {
+                const cleanCode = code.trim();
+                const cleanPseudo = pseudo.trim();
+                userCodes.set(cleanCode, { code: cleanCode, pseudo: cleanPseudo });
+                if (!conversations.has(cleanCode)) {
+                    conversations.set(cleanCode, { label: cleanPseudo, messages: [] });
+                }
+            }
+        });
+    }
+}
+loadPermanentCodes();
+
+// Fonction d'envoi des notifications Discord
 async function sendDiscordNotification(pseudo, text) {
     if (!DISCORD_WEBHOOK_URL) return;
 
@@ -38,21 +57,20 @@ async function sendDiscordNotification(pseudo, text) {
             })
         });
     } catch (err) {
-        console.error('Erreur lors de l\'envoi de la notification Discord:', err);
+        console.error('Erreur lors de l\'envoi Discord:', err);
     }
 }
 
-// Nettoyage automatique des messages toutes les 10 secondes (messages > 1 minute)
+// Nettoyage automatique des messages (> 60 secondes)
 setInterval(() => {
     const now = Date.now();
-    const expireTime = 60 * 1000; // 1 minute (60 000 ms)
+    const expireTime = 60 * 1000;
 
     conversations.forEach((conv, targetCode) => {
         const remainingMessages = [];
 
         conv.messages.forEach((msg) => {
             if (now - msg.ts > expireTime) {
-                // Notifier les clients que ce message est expiré
                 io.to(`room_${targetCode}`).emit('message_deleted', { targetCode, ts: msg.ts });
                 io.to('admin_room').emit('message_deleted', { targetCode, ts: msg.ts });
             } else {
@@ -62,11 +80,11 @@ setInterval(() => {
 
         conv.messages = remainingMessages;
     });
-}, 10000);
+}, 5000);
 
 io.on('connection', (socket) => {
 
-    // Authentification
+    // Authentification par code
     socket.on('authenticate', (inputCode) => {
         const code = String(inputCode).trim();
 
@@ -139,12 +157,11 @@ io.on('connection', (socket) => {
             io.to(`room_${userCode}`).emit('new_message', { targetCode: userCode, message: msg });
             io.to('admin_room').emit('new_message', { targetCode: userCode, message: msg });
 
-            // Envoi de la notification sur Discord
             sendDiscordNotification(user ? user.pseudo : 'Utilisateur', messageText);
         }
     });
 
-    // Admin : Générer un code
+    // Admin : Génération dynamique de code
     socket.on('admin_generate_code', (customPseudo) => {
         const session = activeSessions.get(socket.id);
         if (!session || session.role !== 'admin') return;
@@ -159,7 +176,7 @@ io.on('connection', (socket) => {
         io.to('admin_room').emit('code_generated', entry);
     });
 
-    // Admin : Supprimer un code
+    // Admin : Suppression de code
     socket.on('admin_delete_code', (codeToDelete) => {
         const session = activeSessions.get(socket.id);
         if (!session || session.role !== 'admin') return;
